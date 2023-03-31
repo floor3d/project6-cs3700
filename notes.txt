@@ -1,0 +1,52 @@
+two goroutines
+
+1. handle elections
+2. handle requests 
+
+--> channels allow communication between routines
+--> CHANNELS ONLY HAVE TO GO [REQUESTS --> ELECTIONS] :D
+-->2 channels: 
+-->--> 1. to tell election routine to restart heartbeat (when you receive a message from the leader)
+-->--> 2. to stop election routine (you got elected as the leader or you need to step down bc desync) 
+
+start race:
+
+select {
+case <- time.After(timeoutRandom()):
+  replica.State = Candidate
+  return
+case <- replica.RestartTimeout:
+  fmt.Printf("restarting follower timeout")
+  return
+}
+
+
+Here is a brief overview of how RAFT leader elections work at a low level:
+
+When a server starts up, it transitions to the follower state and waits for RPCs (Remote Procedure Calls) from other servers.
+
+If a server doesn't receive an RPC from a leader or candidate within a certain amount of time (the election timeout), it becomes a candidate and starts a new election.
+
+The candidate increments its current term and votes for itself. It then sends a RequestVote RPC to all other servers in the cluster, asking them to vote for it.
+
+Each server will vote for the candidate if they haven't voted in a higher term. The server will also reset its election timeout and respond to the candidate with a vote response.
+
+If a candidate receives a majority of votes (including its own vote), it becomes the new leader for the term. It sends out AppendEntries RPCs to all followers to update them with its log entries and keep the system consistent.
+
+If no candidate receives a majority of votes, then a new election is started with a new term.
+
+If a candidate receives a RequestVote RPC from a server with a higher term, it immediately steps down and becomes a follower. The candidate will also update its term and vote for the new candidate.
+
+If a follower hasn't received any communication from a leader or candidate after a certain amount of time (the leader timeout), it transitions to a candidate state and starts a new election.
+
+These steps ensure that a leader is elected in a distributed system and that the system remains consistent and available even if some of the servers in the cluster fail or become unresponsive.
+
+ 
+
+Yes, there is a timeout for when no candidate receives a majority of votes in RAFT leader elections. This timeout is known as the election timeout, and it is a crucial component of the RAFT algorithm.
+
+When a follower server doesn't receive any communication from a leader or candidate for a certain period (typically between 150-300 milliseconds), it starts a new election by transitioning to the candidate state. This timeout is randomized to avoid multiple servers becoming candidates at the same time and causing split votes.
+
+During an election, if a candidate fails to receive a majority of the votes, it waits for the election timeout to elapse and then starts a new election in a new term with a higher term number. This allows the candidate to start a new election with a fresh set of votes, and it prevents the system from getting stuck in an endless loop of candidate elections.
+
+So in summary, the timeout for when no candidate receives a majority of votes is the election timeout, which is randomized to prevent split votes and allow for a fresh election to take place.
