@@ -340,7 +340,7 @@ func electionTimeout() int {
 
 
 // as leader, send heartbeat every 300 ms so that the followers know the leader is still alive
-func sendHeartbeat(r Replica, conn *net.UDPConn, message Message, necessary chan bool) {
+func sendHeartbeat(r Replica, conn *net.UDPConn, message Message) {
   for {
     time.Sleep(300 * time.Millisecond)
     message["MID"] = generateRandomID()
