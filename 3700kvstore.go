@@ -30,6 +30,7 @@ type Replica struct {
   state    string // one of: 'Leader', 'Candidate', 'Follower'
   term     int    // designates which term it is. starts at 1
   dict     map[string]string // the key-value store
+  newLeaderMsg chan Message
 }
 
 var rng *mrand.Rand
@@ -91,7 +92,8 @@ func initReplica(r Replica) {
   electLeader(&r, listen)
 
   heartbeat := make(chan Message)
-
+  newLeaderMsg := make(chan Message)
+  r.newLeaderMsg = newLeaderMsg
   go ensureLeaderHeartbeat(&r, listen, heartbeat)
 
   fmt.Println("Listening for incoming messages...")
@@ -111,9 +113,15 @@ func initReplica(r Replica) {
       put(&r, listen, str)
     } else if str["type"] == "get" {
       get(r, listen, str)
+    } else if str["type"] == "RFV" {
+      num, err := strconv.Atoi(str["term"])
+      if num > r.term && err == nil {
+        fmt.Println("Received request for vote from candidate " + str["src"])
+        voteForNewLeader(&r, listen, newLeaderMsg, str)
+      }
     } else if str["type"] == "AppendEntries" {
       heartbeat<-str
-    }
+    } 
   }
 
 }
@@ -196,7 +204,6 @@ func electLeader(r *Replica, conn *net.UDPConn/*, done chan bool, stop chan bool
       fmt.Println("Received request for vote from candidate " + candidate_id)
       voteForCandidate(r, conn, candidate_id)
     case <-time.After(time.Duration(timeout) * time.Millisecond):
-      r.state = "Candidate"
       sendRequestForVote(r, conn)
 //      stop<-true
       close(stop)
@@ -237,6 +244,7 @@ func listenForLeader(ch chan string, conn *net.UDPConn, stop chan bool) {
 
 
 func sendRequestForVote(r *Replica, conn *net.UDPConn) {
+  r.state = "Candidate"
   r.term += 1
   message := make(Message)
 //  for index, value := range r.others {
@@ -252,9 +260,16 @@ func sendRequestForVote(r *Replica, conn *net.UDPConn) {
   numVotes := 1 // vote for self
 
   // wait for others to send votes back
+  timeout := 2.5 * time.Second
+  start := time.Now()
+  elapsed := 0
 
   buf := make([]byte, 2048)
   for {
+    elapsed = time.Since(start)
+    if elapsed >= timeout {
+        return
+    }
     n, _, err := conn.ReadFromUDP(buf)
     if err != nil {
         fmt.Printf("Error reading UDP packet: %v\n", err)
@@ -263,6 +278,14 @@ func sendRequestForVote(r *Replica, conn *net.UDPConn) {
     fmt.Printf("Received message in send request for vote: %s\n", string(buf[:n]))
     str := make(map[string]string)
     json.Unmarshal(buf[:n], &str)
+    if str["type"] == "RFV" {
+      num, err := strconv.Atoi(str["term"])
+      if num > r.term && err == nil {
+        fmt.Println("Received request for vote from candidate " + str["src"])
+        voteForNewLeader(r, conn, r.newLeaderMsg, str)
+        return
+      }
+    }
     if str["type"] == "VOTE" {
       numVotes = numVotes + 1
       if(numVotes > len(r.others) / 2) {
@@ -386,3 +409,30 @@ func sendPutToFollowers(r Replica, conn *net.UDPConn, msg Message) {
   send(r, conn, message)
 }
 
+func voteForNewLeader(r *Replica, conn *net.UDPConn, newLeaderMsg chan Message, str Message) {
+  term, err := strconv.Atoi(str["term"])
+  if(err != nil) {
+    panic("error in atoi")
+  }
+  r.term = term
+  message := make(Message)
+  message["src"] = r.id 
+  message["dst"] = str["src"]
+  message["leader"] = r.leader
+  message["type"] = "VOTE"
+  message["MID"] = generateRandomID()
+  send(*r, conn, message)
+  
+  timeout := electionTimeout()
+
+  select {
+  case <-time.After(time.Duration(timeout) * time.Millisecond):
+    // failed. try to become next leader
+    sendRequestForVote(r, conn)
+    return
+  case msg := <-newLeaderMsg:
+    r.leader = msg["src"]
+    return
+  }
+
+}
