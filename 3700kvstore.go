@@ -120,6 +120,14 @@ func initReplica(r Replica) {
         voteForNewLeader(&r, listen, newLeaderMsg, str)
       }
     } else if str["type"] == "AppendEntries" {
+      if(r.state == "Leader") {
+        num, err := strconv.Atoi(str["term"])
+        if num > r.term && err == nil {
+          r.state = "Follower"
+          r.leader = str["src"]
+        }
+
+      }
       heartbeat<-str
     } 
   }
@@ -260,13 +268,13 @@ func sendRequestForVote(r *Replica, conn *net.UDPConn) {
   numVotes := 1 // vote for self
 
   // wait for others to send votes back
-  timeout := 2.5 * time.Second
+  timeout := 2 
   start := time.Now()
   elapsed := 0
 
   buf := make([]byte, 2048)
   for {
-    elapsed = time.Since(start)
+    elapsed = int(time.Since(start).Seconds())
     if elapsed >= timeout {
         return
     }
@@ -295,6 +303,11 @@ func sendRequestForVote(r *Replica, conn *net.UDPConn) {
         return
       }
     }
+    if str["type"] == "AppendEntries" {
+      r.state = "Follower"
+      r.leader = str["src"]
+      return
+    }
 
   }
 
@@ -321,6 +334,7 @@ func sendNewLeaderMessage(r Replica, conn *net.UDPConn) {
   message["dst"] = "FFFF"
   message["leader"] = r.id
   message["type"] = "AppendEntries"
+  message["term"] = strconv.Itoa(r.term)
   message["MID"] = generateRandomID()
   send(r, conn, message)
   go sendHeartbeat(r, conn, message)
@@ -364,6 +378,9 @@ func electionTimeout() int {
 
 // as leader, send heartbeat every 300 ms so that the followers know the leader is still alive
 func sendHeartbeat(r Replica, conn *net.UDPConn, message Message) {
+  if(r.state != "Leader") {
+    return
+  }
   for {
     time.Sleep(300 * time.Millisecond)
     message["MID"] = generateRandomID()
@@ -403,6 +420,7 @@ func sendPutToFollowers(r Replica, conn *net.UDPConn, msg Message) {
   message["dst"] = "FFFF"
   message["leader"] = r.id
   message["type"] = "AppendEntries"
+  message["term"] = strconv.Itoa(r.term)
   message["MID"] = generateRandomID()
   message["key"] = msg["key"]
   message["value"] = msg["value"]
