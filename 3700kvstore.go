@@ -31,6 +31,7 @@ type Replica struct {
   term     int    // designates which term it is. starts at 1
   dict     map[string]string // the key-value store
   newLeaderMsg chan Message
+  votes    int
 }
 
 var rng *mrand.Rand
@@ -129,7 +130,15 @@ func initReplica(r Replica) {
 
       }
       heartbeat<-str
-    } 
+    } else if str["type"] == "VOTE" {
+      r.votes += 1
+      if(r.votes > len(r.others) / 2) {
+        r.votes = 1
+        r.state = "Leader"
+        r.leader = r.id
+        sendNewLeaderMessage(r, listen)
+      }
+    }
   }
 
 }
@@ -139,6 +148,7 @@ func main() {
   r := Replica{}
   r.term = 0
   r.leader = "FFFF"
+  r.votes = 1
   initReplica(r)
 }
 
@@ -272,8 +282,7 @@ func sendRequestForVote(r *Replica, conn *net.UDPConn) {
   send(*r, conn, message)
 //  }
 
-  numVotes := 1 // vote for self
-
+  
   // wait for others to send votes back
   timeout := 2 
   start := time.Now()
@@ -284,6 +293,13 @@ func sendRequestForVote(r *Replica, conn *net.UDPConn) {
     elapsed = int(time.Since(start).Seconds())
     if elapsed >= timeout {
         return
+    }
+    if(r.votes > len(r.others) / 2) {
+      r.votes = 1
+      r.state = "Leader"
+      r.leader = r.id
+      sendNewLeaderMessage(*r, conn)
+      return
     }
     n, _, err := conn.ReadFromUDP(buf)
     if err != nil {
@@ -302,8 +318,9 @@ func sendRequestForVote(r *Replica, conn *net.UDPConn) {
       }
     }
     if str["type"] == "VOTE" {
-      numVotes = numVotes + 1
-      if(numVotes > len(r.others) / 2) {
+      r.votes = r.votes + 1
+      if(r.votes > len(r.others) / 2) {
+        r.votes = 1
         r.state = "Leader"
         r.leader = r.id
         sendNewLeaderMessage(*r, conn)
@@ -386,19 +403,19 @@ func voteForCandidate(r *Replica, conn *net.UDPConn, candidate_id string) {
 
 }
 
-//return random num from 200 to 500
+//return random num from 600 to 900
 func electionTimeout() int {
   rng = mrand.New(mrand.NewSource(time.Now().Unix()))
-  return rng.Intn(301) + 200
+  return rng.Intn(301) + 500
 }
 
 
 // as leader, send heartbeat every 300 ms so that the followers know the leader is still alive
 func sendHeartbeat(r Replica, conn *net.UDPConn, message Message) {
-  if(r.state != "Leader") {
-    return
-  }
   for {
+    if(r.state != "Leader") {
+      return
+    }
     time.Sleep(300 * time.Millisecond)
     message["MID"] = generateRandomID()
     send(r, conn, message)
@@ -408,11 +425,11 @@ func sendHeartbeat(r Replica, conn *net.UDPConn, message Message) {
 
 // as follower, ensure that you hear from leader every x ms or else leader is dead
 func ensureLeaderHeartbeat(r *Replica, conn *net.UDPConn, heartbeat chan Message) {
-  if(r.state == "Leader") {
-    return
-  }
   timeout := electionTimeout()
   for {
+    if(r.state == "Leader") {
+      return
+    }
     select {
       case <-time.After(time.Duration(timeout + 250) * time.Millisecond):
         // uh oh. leader has died. begin new election by incrementing term and requesting vote
@@ -445,6 +462,7 @@ func sendPutToFollowers(r Replica, conn *net.UDPConn, msg Message) {
 }
 
 func voteForNewLeader(r *Replica, conn *net.UDPConn, newLeaderMsg chan Message, str Message) {
+  r.state = "Follower"
   term, err := strconv.Atoi(str["term"])
   if(err != nil) {
     panic("error in atoi")
